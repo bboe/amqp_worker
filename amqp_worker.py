@@ -10,7 +10,7 @@ import time
 import traceback
 from argparse import ArgumentParser, FileType
 
-__version__ = '0.0.1'
+__version__ = '0.0.2'
 
 
 class AMQPWorker(object):
@@ -107,7 +107,10 @@ class AMQPWorker(object):
             else:
                 self.log_file = '/dev/null'
             log_fp = open(self.log_file, 'a')
-            with daemon.DaemonContext(stdout=log_fp, stderr=log_fp):
+            kwargs = {}
+            if self.working_dir:
+                kwargs['working_directory'] = self.working_dir
+            with daemon.DaemonContext(stdout=log_fp, stderr=log_fp, **kwargs):
                 # Line-buffer the output streams
                 sys.stdout = os.fdopen(sys.stdout.fileno(), 'a', 1)
                 sys.stderr = os.fdopen(sys.stderr.fileno(), 'a', 1)

@@ -4,6 +4,8 @@ import sys
 
 
 def do_work(some_id):
+    with open('foo', 'w') as fp:
+        fp.write(some_id + '\n')
     print(some_id)
     return {'some_id': some_id}
 
