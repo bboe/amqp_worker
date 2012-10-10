@@ -10,7 +10,7 @@ import time
 import traceback
 from argparse import ArgumentParser, FileType
 
-__version__ = '0.0.2'
+__version__ = '0.0.3'
 
 
 class AMQPWorker(object):
@@ -26,8 +26,7 @@ class AMQPWorker(object):
         self.log_file = log_file
         self.working_dir = working_dir
         self.error_queue = '{0}_errors'.format(receive_queue)
-        self.connection = self.channel = self.complete_channel = None
-        self.error_channel = None
+        self.connection = self.channel = None
 
     def _start(self):
         sleep_time = 1
@@ -66,12 +65,12 @@ class AMQPWorker(object):
             return_message = self.worker_func(**json.loads(message))
         except TypeError as exc:
             # Save the original in the error queue
-            self.error_channel.basic_publish(
+            self.channel.basic_publish(
                 exchange='', body=message, routing_key=self.error_queue,
                 properties=pika.BasicProperties(delivery_mode=2))
             print('Message moved to error_queue: {0}'.format(exc))
         if return_message is not None:
-            self.complete_channel.basic_publish(
+            self.channel.basic_publish(
                 exchange='', body=json.dumps(return_message),
                 routing_key=self.complete_queue,
                 properties=pika.BasicProperties(delivery_mode=2))
@@ -83,12 +82,9 @@ class AMQPWorker(object):
             pika.ConnectionParameters(host=self.server))
         self.channel = self.connection.channel()
         self.channel.queue_declare(queue=self.receive_queue, durable=True)
-        self.error_channel = self.connection.channel()
-        self.error_channel.queue_declare(queue=self.error_queue, durable=True)
+        self.channel.queue_declare(queue=self.error_queue, durable=True)
         if self.complete_queue:
-            self.complete_channel = self.connection.channel()
-            self.complete_channel.queue_declare(queue=self.complete_queue,
-                                                durable=True)
+            self.channel.queue_declare(queue=self.complete_queue, durable=True)
         self.channel.basic_qos(prefetch_count=1)
         print('Connected')
 
