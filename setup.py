@@ -16,7 +16,7 @@ setup(name=MODULE_NAME,
                    'License :: OSI Approved :: BSD License',
                    'Operating System :: OS Independent',
                    'Programming Language :: Python',
-                   'Programming Language :: Python :: 3']
+                   'Programming Language :: Python :: 3'],
       description=('A python module for writing workers (daemons) triggered '
                    'from amqp jobs.'),
       install_requires=['daemon', 'pika'],
