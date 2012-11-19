@@ -19,7 +19,7 @@ setup(name=MODULE_NAME,
                    'Programming Language :: Python :: 3'],
       description=('A python module for writing workers (daemons) triggered '
                    'from amqp jobs.'),
-      install_requires=['daemon', 'pika'],
+      install_requires=['daemon', 'pika>=0.9.6'],
       license='Simplified BSD License',
       long_description=README,
       py_modules=[MODULE_NAME],

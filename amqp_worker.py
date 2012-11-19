@@ -54,7 +54,7 @@ class AMQPWorker(object):
             finally:
                 # Force disconnect to release the jobs
                 if self.connection:
-                    if not self.connection.closed:
+                    if not self.connection.is_closed:
                         self.connection.close()
                     self.connection._adapter_disconnect()
                     self.connection = None
