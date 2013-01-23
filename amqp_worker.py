@@ -10,7 +10,7 @@ import time
 import traceback
 from argparse import ArgumentParser, FileType
 
-__version__ = '0.0.3'
+__version__ = '0.0.4'
 
 
 class AMQPWorker(object):
@@ -18,6 +18,16 @@ class AMQPWorker(object):
 
     def __init__(self, server, receive_queue, worker_func, complete_queue=None,
                  is_daemon=False, log_file=None, working_dir=None):
+        """Initialize an AMQPWorker.
+
+        :param worker_func: is called with message from receive_queue where the
+            dictionary keywords become the keyword arguments. If this function
+            returns a dictionary, that dictionary is added as a message to the
+            complete_queue. Alternatively an iterable of dictionaries can be
+            returned, each of which will be added to the complete_queue.
+
+        """
+
         self.server = server
         self.receive_queue = receive_queue
         self.worker_func = worker_func
@@ -60,20 +70,23 @@ class AMQPWorker(object):
                     self.connection = None
 
     def consume_callback(self, channel, method, _, message):
-        return_message = None
+        return_messages = None
         try:
-            return_message = self.worker_func(**json.loads(message))
+            return_messages = self.worker_func(**json.loads(message))
         except TypeError as exc:
             # Save the original in the error queue
             self.channel.basic_publish(
                 exchange='', body=message, routing_key=self.error_queue,
                 properties=pika.BasicProperties(delivery_mode=2))
             print('Message moved to error_queue: {0}'.format(exc))
-        if return_message is not None:
-            self.channel.basic_publish(
-                exchange='', body=json.dumps(return_message),
-                routing_key=self.complete_queue,
-                properties=pika.BasicProperties(delivery_mode=2))
+        if return_messages is not None:
+            if isinstance(return_messages, dict):
+                return_messages = [return_messages]
+            for return_message in return_messages:
+                self.channel.basic_publish(
+                    exchange='', body=json.dumps(return_message),
+                    routing_key=self.complete_queue,
+                    properties=pika.BasicProperties(delivery_mode=2))
         channel.basic_ack(delivery_tag=method.delivery_tag)
 
     def initialize_connection(self):
