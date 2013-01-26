@@ -4,7 +4,7 @@ import sys
 
 
 def do_work(some_id):
-    with open('foo', 'w') as fp:
+    with open('foo', 'a') as fp:
         fp.write(some_id + '\n')
     print(some_id)
     return [{'some_id': some_id}, {'some_id': 1024}]
@@ -15,6 +15,7 @@ def main():
     args, settings = amqp_worker.parse_base_args(parser, 'main')
 
     log_file = os.path.expanduser(settings['log_file'])
+    pid_file = os.path.expanduser(settings['pid_file'])
     working_dir = os.path.expanduser(settings['working_dir'])
 
     worker = amqp_worker.AMQPWorker(settings['server'],
@@ -22,7 +23,7 @@ def main():
                                     do_work, is_daemon=args.daemon,
                                     complete_queue=settings['complete_queue'],
                                     working_dir=working_dir,
-                                    log_file=log_file)
+                                    log_file=log_file, pid_file=pid_file)
     worker.start()
 
 

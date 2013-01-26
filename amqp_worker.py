@@ -1,7 +1,9 @@
 import ConfigParser
+import atexit
 import daemon
 import errno
 import json
+import logging
 import os
 import pika
 import socket
@@ -10,14 +12,15 @@ import time
 import traceback
 from argparse import ArgumentParser, FileType
 
-__version__ = '0.0.4'
+__version__ = '0.0.5'
 
 
 class AMQPWorker(object):
     MAX_SLEEP_TIME = 64
 
     def __init__(self, server, receive_queue, worker_func, complete_queue=None,
-                 is_daemon=False, log_file=None, working_dir=None):
+                 working_dir=None, is_daemon=False, log_file=None,
+                 pid_file=None):
         """Initialize an AMQPWorker.
 
         :param worker_func: is called with message from receive_queue where the
@@ -27,16 +30,18 @@ class AMQPWorker(object):
             returned, each of which will be added to the complete_queue.
 
         """
-
         self.server = server
         self.receive_queue = receive_queue
         self.worker_func = worker_func
         self.complete_queue = complete_queue
         self.is_daemon = is_daemon
-        self.log_file = log_file
+        self.log_file = os.path.abspath(log_file)
+        self.pid_file = os.path.abspath(pid_file)
         self.working_dir = working_dir
         self.error_queue = '{0}_errors'.format(receive_queue)
         self.connection = self.channel = None
+        # Don't log pika messages to stdout
+        logging.getLogger('pika').addHandler(logging.NullHandler())
 
     def _start(self):
         sleep_time = 1
@@ -63,11 +68,10 @@ class AMQPWorker(object):
                 running = False
             finally:
                 # Force disconnect to release the jobs
-                if self.connection:
-                    if not self.connection.is_closed:
-                        self.connection.close()
-                    self.connection._adapter_disconnect()
-                    self.connection = None
+                if self.connection and not self.connection.is_closed:
+                    # This call complains when daemon mode dies, oh well
+                    self.connection.close()
+                self.connection = None
 
     def consume_callback(self, channel, method, _, message):
         return_messages = None
@@ -115,11 +119,32 @@ class AMQPWorker(object):
                 make_dirs(os.path.dirname(self.log_file))
             else:
                 self.log_file = '/dev/null'
+            if self.pid_file:
+                # Exit on existing pidfile
+                if os.path.isfile(self.pid_file):
+                    print('pidfile `{0}` already exists'.format(self.pid_file))
+                    sys.exit(1)
+                pid_file = open(self.pid_file, 'w')
+                files_preserve = [pid_file]
+            else:
+                pid_file = None
+                files_preserve = None
             log_fp = open(self.log_file, 'a')
             kwargs = {}
             if self.working_dir:
                 kwargs['working_directory'] = self.working_dir
-            with daemon.DaemonContext(stdout=log_fp, stderr=log_fp, **kwargs):
+            with daemon.DaemonContext(files_preserve=files_preserve,
+                                      stdout=log_fp, stderr=log_fp, **kwargs):
+                def delete_pid_file():
+                    if self.pid_file:
+                        os.remove(self.pid_file)
+
+                # Configure pid file state and cleanup
+                if self.pid_file:
+                    atexit.register(delete_pid_file)
+                    pid_file.write(str(os.getpid()))
+                    pid_file.close()
+
                 # Line-buffer the output streams
                 sys.stdout = os.fdopen(sys.stdout.fileno(), 'a', 1)
                 sys.stderr = os.fdopen(sys.stderr.fileno(), 'a', 1)
