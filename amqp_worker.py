@@ -12,7 +12,7 @@ import time
 import traceback
 from argparse import ArgumentParser, FileType
 
-__version__ = '0.0.5'
+__version__ = '0.0.6'
 
 
 class AMQPWorker(object):
@@ -30,14 +30,17 @@ class AMQPWorker(object):
             returned, each of which will be added to the complete_queue.
 
         """
+        def fullpath(path):
+            return os.path.abspath(os.path.expanduser(path)) if path else None
+
         self.server = server
         self.receive_queue = receive_queue
         self.worker_func = worker_func
         self.complete_queue = complete_queue
         self.is_daemon = is_daemon
-        self.log_file = os.path.abspath(log_file)
-        self.pid_file = os.path.abspath(pid_file)
-        self.working_dir = working_dir
+        self.log_file = fullpath(log_file)
+        self.pid_file = fullpath(pid_file)
+        self.working_dir = fullpath(working_dir)
         self.error_queue = '{0}_errors'.format(receive_queue)
         self.connection = self.channel = None
         # Don't log pika messages to stdout

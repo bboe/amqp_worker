@@ -14,16 +14,12 @@ def main():
     parser = amqp_worker.base_argument_parser()
     args, settings = amqp_worker.parse_base_args(parser, 'main')
 
-    log_file = os.path.expanduser(settings['log_file'])
-    pid_file = os.path.expanduser(settings['pid_file'])
-    working_dir = os.path.expanduser(settings['working_dir'])
-
-    worker = amqp_worker.AMQPWorker(settings['server'],
-                                    settings['receive_queue'],
-                                    do_work, is_daemon=args.daemon,
-                                    complete_queue=settings['complete_queue'],
-                                    working_dir=working_dir,
-                                    log_file=log_file, pid_file=pid_file)
+    worker = amqp_worker.AMQPWorker(
+        settings['server'], settings['receive_queue'],
+        do_work, is_daemon=args.daemon,
+        complete_queue=settings['complete_queue'],
+        working_dir=settings['working_dir'],
+        log_file=settings['log_file'], pid_file=settings['pid_file'])
     worker.start()
 
 
