@@ -12,15 +12,16 @@ import time
 import traceback
 from argparse import ArgumentParser, FileType
 
-__version__ = '0.0.6'
+__version__ = '0.0.7'
 
 
 class AMQPWorker(object):
+    PRIORITY_QUEUE_POLL_DELAY = 0.5  # In seconds
     MAX_SLEEP_TIME = 64
 
-    def __init__(self, server, receive_queue, worker_func, complete_queue=None,
-                 working_dir=None, is_daemon=False, log_file=None,
-                 pid_file=None):
+    def __init__(self, server, receive_queue, worker_func, error_queue=None,
+                 complete_queue=None, working_dir=None, is_daemon=False,
+                 log_file=None, pid_file=None):
         """Initialize an AMQPWorker.
 
         :param worker_func: is called with message from receive_queue where the
@@ -28,6 +29,9 @@ class AMQPWorker(object):
             returns a dictionary, that dictionary is added as a message to the
             complete_queue. Alternatively an iterable of dictionaries can be
             returned, each of which will be added to the complete_queue.
+        :param receive_queue: is the queue from which to receive jobs. If this
+            argument is of a type list, then each item should be a queue, with
+            the highest priority queues listed first.
 
         """
         def fullpath(path):
@@ -41,8 +45,9 @@ class AMQPWorker(object):
         self.log_file = fullpath(log_file)
         self.pid_file = fullpath(pid_file)
         self.working_dir = fullpath(working_dir)
-        self.error_queue = '{0}_errors'.format(receive_queue)
+        self.error_queue = error_queue
         self.connection = self.channel = None
+        self.use_priority = isinstance(receive_queue, list)
         # Don't log pika messages to stdout
         logging.getLogger('pika').addHandler(logging.NullHandler())
 
@@ -81,11 +86,14 @@ class AMQPWorker(object):
         try:
             return_messages = self.worker_func(**json.loads(message))
         except TypeError as exc:
-            # Save the original in the error queue
-            self.channel.basic_publish(
-                exchange='', body=message, routing_key=self.error_queue,
-                properties=pika.BasicProperties(delivery_mode=2))
-            print('Message moved to error_queue: {0}'.format(exc))
+            if self.error_queue:
+                # Save the original in the error queue
+                self.channel.basic_publish(
+                    exchange='', body=message, routing_key=self.error_queue,
+                    properties=pika.BasicProperties(delivery_mode=2))
+                print('Message moved to error_queue: {0}'.format(exc))
+            else:
+                print('Failed on {0}. Reason: {1}'.format(message, exc))
         if return_messages is not None:
             if isinstance(return_messages, dict):
                 return_messages = [return_messages]
@@ -101,17 +109,34 @@ class AMQPWorker(object):
         self.connection = pika.BlockingConnection(
             pika.ConnectionParameters(host=self.server))
         self.channel = self.connection.channel()
-        self.channel.queue_declare(queue=self.receive_queue, durable=True)
-        self.channel.queue_declare(queue=self.error_queue, durable=True)
+        if self.use_priority:
+            for receive_queue in self.receive_queue:
+                self.channel.queue_declare(queue=receive_queue, durable=True)
+        else:
+            self.channel.queue_declare(queue=self.receive_queue, durable=True)
+            self.channel.basic_qos(prefetch_count=1)
+        if self.error_queue:
+            self.channel.queue_declare(queue=self.error_queue, durable=True)
         if self.complete_queue:
             self.channel.queue_declare(queue=self.complete_queue, durable=True)
-        self.channel.basic_qos(prefetch_count=1)
         print('Connected')
 
     def receive_jobs(self):
-        self.channel.basic_consume(self.consume_callback,
-                                   queue=self.receive_queue)
-        self.channel.start_consuming()
+        if self.use_priority:
+            # Attempt to consume from highest priority queues first
+            while True:
+                for queue in self.receive_queue:
+                    method, header, body = self.channel.basic_get(queue)
+                    if method:
+                        self.consume_callback(self.channel, method, header,
+                                              body)
+                        break
+                else:
+                    time.sleep(self.PRIORITY_QUEUE_POLL_DELAY)
+        else:
+            self.channel.basic_consume(self.consume_callback,
+                                       queue=self.receive_queue)
+            self.channel.start_consuming()
 
     def start(self):
         if self.working_dir:
@@ -174,6 +199,8 @@ def parse_base_args(parser, config_section='DEFAULT'):
         parser.error('Error with ini_file {0}: {1}'.format(args.ini_file.name,
                                                            error))
     settings = dict(config.items(config_section))
+    if '\n' in settings['receive_queue']:
+        settings['receive_queue'] = settings['receive_queue'].split('\n')
     return args, settings
 
 

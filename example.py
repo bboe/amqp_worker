@@ -17,6 +17,7 @@ def main():
     worker = amqp_worker.AMQPWorker(
         settings['server'], settings['receive_queue'],
         do_work, is_daemon=args.daemon,
+        error_queue=settings.get('error_queue'),
         complete_queue=settings['complete_queue'],
         working_dir=settings['working_dir'],
         log_file=settings['log_file'], pid_file=settings['pid_file'])
