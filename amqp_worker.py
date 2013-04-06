@@ -12,7 +12,7 @@ import time
 import traceback
 from argparse import ArgumentParser, FileType
 
-__version__ = '0.0.7'
+__version__ = '0.0.8'
 
 
 class AMQPWorker(object):
@@ -199,8 +199,9 @@ def parse_base_args(parser, config_section='DEFAULT'):
         parser.error('Error with ini_file {0}: {1}'.format(args.ini_file.name,
                                                            error))
     settings = dict(config.items(config_section))
-    if '\n' in settings['receive_queue']:
-        settings['receive_queue'] = settings['receive_queue'].split('\n')
+    for key in settings:  # Make lists from items spanning multiple lines
+        if '\n' in settings[key]:
+            settings[key] = settings[key].split('\n')
     return args, settings
 
 
