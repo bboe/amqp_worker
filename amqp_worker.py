@@ -12,7 +12,7 @@ import time
 import traceback
 from argparse import ArgumentParser, FileType
 
-__version__ = '0.0.8'
+__version__ = '0.0.9'
 
 
 class AMQPWorker(object):
@@ -30,6 +30,9 @@ class AMQPWorker(object):
             complete_queue. Alternatively an iterable of dictionaries can be
             returned, each of which will be added to the complete_queue.
         :param receive_queue: is the queue from which to receive jobs. If this
+            argument is of a type list, then each item should be a queue, with
+            the highest priority queues listed first.
+        :param complete_queue: is the queue to put the job results. If this
             argument is of a type list, then each item should be a queue, with
             the highest priority queues listed first.
 
@@ -84,7 +87,16 @@ class AMQPWorker(object):
     def consume_callback(self, channel, method, _, message):
         return_messages = None
         try:
-            return_messages = self.worker_func(**json.loads(message))
+            kwargs = json.loads(message)
+            if '_priority' in kwargs:
+                try:
+                    priority = int(kwargs['_priority'])
+                except ValueError:
+                    priority = None
+                del kwargs['_priority']
+            else:
+                priority = None
+            return_messages = self.worker_func(**kwargs)
         except TypeError as exc:
             if self.error_queue:
                 # Save the original in the error queue
@@ -95,12 +107,23 @@ class AMQPWorker(object):
             else:
                 print('Failed on {0}. Reason: {1}'.format(message, exc))
         if return_messages is not None:
+            # Determine the return queue
+            if isinstance(self.complete_queue, list):
+                max_priority = len(self.complete_queue)
+                if priority is not None:
+                    priority = min(max(0, priority), max_priority - 1)
+                    queue = self.complete_queue[priority]
+                else:
+                    queue = self.complete_queue[max_priority / 2]
+            else:
+                queue = self.complete_queue
+
             if isinstance(return_messages, dict):
                 return_messages = [return_messages]
             for return_message in return_messages:
                 self.channel.basic_publish(
                     exchange='', body=json.dumps(return_message),
-                    routing_key=self.complete_queue,
+                    routing_key=queue,
                     properties=pika.BasicProperties(delivery_mode=2))
         channel.basic_ack(delivery_tag=method.delivery_tag)
 
@@ -117,7 +140,10 @@ class AMQPWorker(object):
             self.channel.basic_qos(prefetch_count=1)
         if self.error_queue:
             self.channel.queue_declare(queue=self.error_queue, durable=True)
-        if self.complete_queue:
+        if isinstance(self.complete_queue, list):
+            for complete_queue in self.complete_queue:
+                self.channel.queue_declare(queue=complete_queue, durable=True)
+        elif self.complete_queue:
             self.channel.queue_declare(queue=self.complete_queue, durable=True)
         print('Connected')
 
