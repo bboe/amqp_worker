@@ -5,7 +5,8 @@ import sys
 
 def do_work(some_id):
     with open('foo', 'a') as fp:
-        fp.write(some_id + '\n')
+        # The following raises an exception if some_id is not int
+        fp.write(int(some_id) + '\n')
     print(some_id)
     return [{'some_id': some_id}, {'some_id': 1024}]
 
@@ -21,7 +22,8 @@ def main():
         complete_queue=settings['complete_queue'],
         working_dir=settings['working_dir'],
         log_file=settings['log_file'], pid_file=settings['pid_file'])
-    worker.start()
+
+    worker.handle_command(args.command)
 
 
 if __name__ == '__main__':

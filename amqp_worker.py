@@ -6,13 +6,14 @@ import json
 import logging
 import os
 import pika
+import signal
 import socket
 import sys
 import time
 import traceback
 from argparse import ArgumentParser, FileType
 
-__version__ = '0.0.9'
+__version__ = '0.1rc1'
 
 
 class AMQPWorker(object):
@@ -127,6 +128,16 @@ class AMQPWorker(object):
                     properties=pika.BasicProperties(delivery_mode=2))
         channel.basic_ack(delivery_tag=method.delivery_tag)
 
+    def handle_command(self, command):
+        if command == 'start':
+            self.start()
+        elif command == 'stop':
+            self.stop()
+        elif command == 'restart':
+            self.stop()
+            time.sleep(1)  # Give the process time to terminate
+            self.start()
+
     def initialize_connection(self):
         print('Attempting connection')
         self.connection = pika.BlockingConnection(
@@ -190,7 +201,7 @@ class AMQPWorker(object):
             with daemon.DaemonContext(files_preserve=files_preserve,
                                       stdout=log_fp, stderr=log_fp, **kwargs):
                 def delete_pid_file():
-                    if self.pid_file:
+                    if self.pid_file and os.path.isfile(self.pid_file):
                         os.remove(self.pid_file)
 
                 # Configure pid file state and cleanup
@@ -206,11 +217,33 @@ class AMQPWorker(object):
         else:
             self._start()
 
+    def stop(self):
+        try:
+            with open(self.pid_file) as fp:
+                pid = int(fp.read())
+            os.kill(pid, signal.SIGINT)
+        except IOError as exc:
+            if exc.errno == 2:  # File does not exist
+                print('Nothing to stop: pid_file `{0}` does not exist'
+                      .format(self.pid_file))
+            else:
+                print(exc)
+        except OSError as exc:
+            if exc.errno == 3:  # No such process
+                print('Process not running. Removing pid_file.')
+                os.unlink(self.pid_file)
+            else:
+                print(exc)
+        except ValueError:
+            print('Invalid pid_file. Removing.')
+            os.unlink(self.pid_file)
+
 
 def base_argument_parser(*args, **kwargs):
     parser = ArgumentParser(*args, **kwargs)
     parser.add_argument('-D', '--not-daemon', action='store_false',
-                        dest='daemon')
+                        dest='daemon', help='Do not run in the background.')
+    parser.add_argument('-c', '--command', default='start')
     parser.add_argument('ini_file', type=FileType())
     return parser
 
