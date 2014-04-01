@@ -52,31 +52,42 @@ class AMQPWorker(object):
         self.error_queue = error_queue
         self.connection = self.channel = None
         self.use_priority = isinstance(receive_queue, list)
-        # Don't log pika messages to stdout
-        logging.getLogger('pika').addHandler(logging.NullHandler())
+        # Configure logger
+        log_format = '%(asctime)s %(levelname)s %(name)s %(message)s'
+        logging.basicConfig(stream=sys.stdout, level=logging.INFO,
+                            format=log_format)
+        # Only log pika ERRORS
+        logging.getLogger('pika').setLevel(logging.ERROR)
 
     def _start(self):
         sleep_time = 1
         iterations = 0
         running = True
+        self.last_exc = None
         while running:
+            if iterations > 0:
+                logging.info('Retrying in {0} seconds'.format(sleep_time))
+                time.sleep(sleep_time)
+                sleep_time = min(self.MAX_SLEEP_TIME, sleep_time * 2)
+            iterations += 1
+
             try:
-                if iterations > 0:
-                    print('Retrying in {0} seconds'.format(sleep_time))
-                    time.sleep(sleep_time)
-                    sleep_time = min(self.MAX_SLEEP_TIME, sleep_time * 2)
-                iterations += 1
                 self.initialize_connection()
                 sleep_time = 1
                 self.receive_jobs()
             except socket.error as error:
-                print('Error connecting to rabbitmq: {0!s}'.format(error))
+                logging.warning('Error connecting to rabbitmq: {0!s}'
+                                .format(error))
             except pika.exceptions.AMQPConnectionError as error:
-                print('Lost connection to rabbitmq')
-            except Exception:
+                logging.warning('Lost connection to rabbitmq')
+            except Exception as exc:
+                if type(exc) is not type(self.last_exc) or \
+                        vars(exc) != vars(self.last_exc):
+                    pass  # EMAIL EXCEPTION
+                self.last_exc = exc
                 traceback.print_exc()
             except KeyboardInterrupt:
-                print('Goodbye!')
+                logging.info('Goodbye!')
                 running = False
             finally:
                 # Force disconnect to release the jobs
@@ -98,15 +109,17 @@ class AMQPWorker(object):
             else:
                 priority = None
             return_messages = self.worker_func(**kwargs)
-        except TypeError as exc:
+        except Exception as exc:
             if self.error_queue:
                 # Save the original in the error queue
                 self.channel.basic_publish(
                     exchange='', body=message, routing_key=self.error_queue,
                     properties=pika.BasicProperties(delivery_mode=2))
-                print('Message moved to error_queue: {0}'.format(exc))
+                logging.error('Message moved to error_queue: {0}'.format(exc))
             else:
-                print('Failed on {0}. Reason: {1}'.format(message, exc))
+                logging.error('Failed on {0}. Reason: {1}'
+                              .format(message, exc))
+            traceback.print_exc()
         if return_messages is not None:
             # Determine the return queue
             if isinstance(self.complete_queue, list):
@@ -127,6 +140,8 @@ class AMQPWorker(object):
                     routing_key=queue,
                     properties=pika.BasicProperties(delivery_mode=2))
         channel.basic_ack(delivery_tag=method.delivery_tag)
+        # A job was processed successfully
+        self.last_exc = None
 
     def handle_command(self, command):
         if command == 'start':
@@ -134,12 +149,12 @@ class AMQPWorker(object):
         elif command == 'stop':
             self.stop()
         elif command == 'restart':
-            self.stop()
-            time.sleep(1)  # Give the process time to terminate
-            self.start()
+            if self.stop():
+                time.sleep(1)  # Give the process time to terminate
+                self.start()
 
     def initialize_connection(self):
-        print('Attempting connection')
+        logging.info('Attempting connection')
         self.connection = pika.BlockingConnection(
             pika.ConnectionParameters(host=self.server))
         self.channel = self.connection.channel()
@@ -156,7 +171,7 @@ class AMQPWorker(object):
                 self.channel.queue_declare(queue=complete_queue, durable=True)
         elif self.complete_queue:
             self.channel.queue_declare(queue=self.complete_queue, durable=True)
-        print('Connected')
+        logging.info('Connected')
 
     def receive_jobs(self):
         if self.use_priority:
@@ -187,7 +202,8 @@ class AMQPWorker(object):
             if self.pid_file:
                 # Exit on existing pidfile
                 if os.path.isfile(self.pid_file):
-                    print('pidfile `{0}` already exists'.format(self.pid_file))
+                    logging.warning('pidfile `{0}` already exists'
+                                    .format(self.pid_file))
                     sys.exit(1)
                 pid_file = open(self.pid_file, 'w')
                 files_preserve = [pid_file]
@@ -224,19 +240,22 @@ class AMQPWorker(object):
             os.kill(pid, signal.SIGINT)
         except IOError as exc:
             if exc.errno == 2:  # File does not exist
-                print('Nothing to stop: pid_file `{0}` does not exist'
-                      .format(self.pid_file))
+                logging.warning('pid_file `{0}` does not exist'
+                                .format(self.pid_file))
             else:
-                print(exc)
+                logging.error(exc)
+                return False
         except OSError as exc:
             if exc.errno == 3:  # No such process
-                print('Process not running. Removing pid_file.')
+                logging.warning('Process not running. Removing pid_file.')
                 os.unlink(self.pid_file)
             else:
-                print(exc)
+                logging.error(exc)
+                return False
         except ValueError:
-            print('Invalid pid_file. Removing.')
+            logging.warning('Invalid pid_file. Removing.')
             os.unlink(self.pid_file)
+        return True
 
 
 def base_argument_parser(*args, **kwargs):
