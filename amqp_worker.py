@@ -7,13 +7,15 @@ import logging
 import os
 import pika
 import signal
+import smtplib
 import socket
 import sys
 import time
 import traceback
 from argparse import ArgumentParser, FileType
+from email.mime.text import MIMEText
 
-__version__ = '0.1rc1'
+__version__ = '0.1'
 
 
 class AMQPWorker(object):
@@ -22,7 +24,8 @@ class AMQPWorker(object):
 
     def __init__(self, server, receive_queue, worker_func, error_queue=None,
                  complete_queue=None, working_dir=None, is_daemon=False,
-                 log_file=None, pid_file=None):
+                 log_file=None, pid_file=None, email_from=None,
+                 email_host=None, email_subject=None, email_to=None):
         """Initialize an AMQPWorker.
 
         :param worker_func: is called with message from receive_queue where the
@@ -52,6 +55,12 @@ class AMQPWorker(object):
         self.error_queue = error_queue
         self.connection = self.channel = None
         self.use_priority = isinstance(receive_queue, list)
+        if email_from and email_to:
+            self.email = {'host': email_host or 'localhost',
+                          'subject': email_subject or 'AMQPWorker Exception',
+                          'from': email_from, 'to': email_to}
+        else:
+            self.email = None
         # Configure logger
         log_format = '%(asctime)s %(levelname)s %(name)s %(message)s'
         logging.basicConfig(stream=sys.stdout, level=logging.INFO,
@@ -78,12 +87,12 @@ class AMQPWorker(object):
             except socket.error as error:
                 logging.warning('Error connecting to rabbitmq: {0!s}'
                                 .format(error))
-            except pika.exceptions.AMQPConnectionError as error:
+            except pika.exceptions.AMQPConnectionError:
                 logging.warning('Lost connection to rabbitmq')
             except Exception as exc:
-                if type(exc) is not type(self.last_exc) or \
-                        vars(exc) != vars(self.last_exc):
-                    pass  # EMAIL EXCEPTION
+                if self.email and (type(exc) is not type(self.last_exc)
+                                   or vars(exc) != vars(self.last_exc)):
+                    self.email_message(traceback.format_exc())
                 self.last_exc = exc
                 traceback.print_exc()
             except KeyboardInterrupt:
@@ -120,6 +129,9 @@ class AMQPWorker(object):
                 logging.error('Failed on {0}. Reason: {1}'
                               .format(message, exc))
             traceback.print_exc()
+            if self.email:
+                self.email_message(traceback.format_exc())
+
         if return_messages is not None:
             # Determine the return queue
             if isinstance(self.complete_queue, list):
@@ -142,6 +154,15 @@ class AMQPWorker(object):
         channel.basic_ack(delivery_tag=method.delivery_tag)
         # A job was processed successfully
         self.last_exc = None
+
+    def email_message(self, message):
+        msg = MIMEText(message)
+        msg['Subject'] = self.email['subject']
+        msg['From'] = self.email['from']
+        msg['To'] = self.email['to']
+        smtp = smtplib.SMTP(self.email['host'])
+        smtp.sendmail(msg['From'], msg['To'], msg.as_string())
+        smtp.close()
 
     def handle_command(self, command):
         if command == 'start':
