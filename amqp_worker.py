@@ -15,7 +15,7 @@ import traceback
 from argparse import ArgumentParser, FileType
 from email.mime.text import MIMEText
 
-__version__ = '0.1'
+__version__ = '0.2'
 
 
 class AMQPWorker(object):
@@ -24,7 +24,7 @@ class AMQPWorker(object):
 
     def __init__(self, server, receive_queue, worker_func, error_queue=None,
                  complete_queue=None, working_dir=None, is_daemon=False,
-                 log_file=None, pid_file=None, email_from=None,
+                 log_file=None, pid_file=None, email_from=None, max_retries=3,
                  email_host=None, email_subject=None, email_to=None):
         """Initialize an AMQPWorker.
 
@@ -39,6 +39,8 @@ class AMQPWorker(object):
         :param complete_queue: is the queue to put the job results. If this
             argument is of a type list, then each item should be a queue, with
             the highest priority queues listed first.
+        :param max_retries: the number of times to requeue a failed job before
+            treating it as an error.
 
         """
         def fullpath(path):
@@ -55,6 +57,7 @@ class AMQPWorker(object):
         self.error_queue = error_queue
         self.connection = self.channel = None
         self.use_priority = isinstance(receive_queue, list)
+        self.retries = int(max_retries)
         if email_from and email_to:
             self.email = {'host': email_host or 'localhost',
                           'subject': email_subject or 'AMQPWorker Exception',
@@ -90,11 +93,11 @@ class AMQPWorker(object):
             except pika.exceptions.AMQPConnectionError:
                 logging.warning('Lost connection to rabbitmq')
             except Exception as exc:
+                traceback.print_exc()
                 if self.email and (type(exc) is not type(self.last_exc)
                                    or vars(exc) != vars(self.last_exc)):
                     self.email_message(traceback.format_exc())
                 self.last_exc = exc
-                traceback.print_exc()
             except KeyboardInterrupt:
                 logging.info('Goodbye!')
                 running = False
@@ -106,18 +109,37 @@ class AMQPWorker(object):
                 self.connection = None
 
     def consume_callback(self, channel, method, _, message):
+        def get_int_value(value, items, default=None):
+            """Remove and return integer value from dictionary items."""
+            if value in items:
+                try:
+                    retval = int(items[value])
+                except ValueError:
+                    retval = default
+                del items[value]
+            else:
+                retval = default
+            return retval
+
         return_messages = None
         try:
             kwargs = json.loads(message)
-            if '_priority' in kwargs:
-                try:
-                    priority = int(kwargs['_priority'])
-                except ValueError:
-                    priority = None
-                del kwargs['_priority']
-            else:
-                priority = None
-            return_messages = self.worker_func(**kwargs)
+            _orig = kwargs.copy()
+            attempt = get_int_value('_attempt', kwargs, default=0)
+            priority = get_int_value('_priority', kwargs)
+            try:
+                return_messages = self.worker_func(**kwargs)
+            except Exception as exc:
+                if attempt < self.retries:  # Increase attempt and retry
+                    _orig['_attempt'] = attempt + 1
+                    self.channel.basic_publish(
+                        exchange='', body=json.dumps(_orig),
+                        routing_key=method.routing_key,
+                        properties=pika.BasicProperties(delivery_mode=2))
+                    logging.warning(
+                        'Requeue (attempt {0}): {1}'.format(attempt + 1, exc))
+                else:
+                    raise
         except Exception as exc:
             if self.error_queue:
                 # Save the original in the error queue
